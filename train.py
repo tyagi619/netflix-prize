@@ -49,20 +49,26 @@ def loadData():
     num_users = len(unique_users)
     num_movies = len(unique_movies)
 
-    train_data = tf.data.Dataset.from_tensor_slices((df[['User', 'Movie']], df['Rating']))
-    train_data = train_data.shuffle(1024, reshuffle_each_iteration=True)
+    user_data = tf.convert_to_tensor(df['User'])
+    movie_data = tf.convert_to_tensor(df['Movie'])
+    ratings = tf.convert_to_tensor(df['Rating'])
+
+    train_data = tf.data.Dataset.from_tensor_slices(({'user':user_data, 'movie':movie_data}, ratings))
+    train_data = train_data.shuffle(4096, reshuffle_each_iteration=True)
+    train_data = train_data.batch(2048)
     return train_data, num_users, num_movies
 
 def recommenderModel(num_users, num_movies, latent_dim=20):
-    input = Input(shape=(2,))
+    user_input = Input(shape=(), name='user')
+    movie_input = Input(shape=(), name='movie')
     x = Embedding(input_dim=num_users,
                   output_dim=latent_dim,
-                  input_length=None)(input[:,0])
+                  input_length=None)(user_input)
     y = Embedding(input_dim=num_movies,
                   output_dim=latent_dim,
-                  input_length=None)(input[:,1])
-    output = Dot(axes=1, normalize=False)([y,x])
-    return Model(inputs=input, outputs=output)
+                  input_length=None)(movie_input)
+    output = Dot(axes=1, normalize=False)([x,y])
+    return Model(inputs=[user_input, movie_input], outputs=output)
 
 def train(train_data, num_users, num_movies, latent_dim=40):
     model = recommenderModel(num_users=num_users, 
@@ -70,13 +76,11 @@ def train(train_data, num_users, num_movies, latent_dim=40):
                              latent_dim=latent_dim)
     print(model.summary())
 
-    model.compile(loss='mean_squared_error',
-                  optimizer='sgd',
+    model.compile(loss='mse',
+                  optimizer='adam',
                   metrics=[tf.keras.metrics.RootMeanSquaredError()]
                  )
-    history = model.fit(x=train_data, batch_size=512, epochs=2, verbose=1)
-
-    print(history.history.keys())
+    history = model.fit(x=train_data, epochs=30, verbose=1)
 
 def main():
     train_data, num_users, num_movies = loadData()
