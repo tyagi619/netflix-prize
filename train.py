@@ -109,7 +109,18 @@ def recommenderModel(num_users, num_movies, latent_dim=40):
                   output_dim=latent_dim,
                   input_length=None,
                   name='movie_matrix')(movie_input)
+
+    movie_bias = Embedding(input_dim=num_movies,
+                           output_dim=1,
+                           input_length=None,
+                           name='movie_bias')(movie_input)
+    user_bias = Embedding(input_dim=num_users,
+                          output_dim=1,
+                          input_length=None,
+                          name='user_bias')(user_input)
+    
     output = Dot(axes=1, normalize=False, name='rating')([x,y])
+    output = tf.keras.layers.Add()([output, movie_bias, user_bias])
     return Model(inputs=[user_input, movie_input], outputs=output, name='recommender')
 
 def train(train_data, val_data, num_users, num_movies, latent_dim=40):

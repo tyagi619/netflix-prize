@@ -7,7 +7,7 @@ _params['DATA_DIRNAME'] = 'data'
 _params['OUT_DIRNAME'] = 'output'
 _params['USER_MAP'] = 'user.json'
 _params['MOVIE_MAP'] = 'movie.json'
-_params['BEST_MODEL'] = 'model/best_model'
+_params['BEST_MODEL'] = 'model1/best_model'
 _params['X_TEST_FILE'] = 'x_test.csv'
 _params['Y_TEST_FILE'] = 'y_test.csv'
 
