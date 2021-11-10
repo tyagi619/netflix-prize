@@ -150,9 +150,15 @@ def train(train_data, val_data, num_users, num_movies, latent_dim=40):
                        )
 
 def main():
-    Config.set('CURDIR', os.getcwd())
-    train_data, val_data, num_users, num_movies = loadData()
-    train(train_data, val_data, num_users, num_movies)
+    model = recommenderModel(num_users=10, 
+                             num_movies=20,
+                             latent_dim=3)
+    print(model.summary())
+    print('#'*100)
+    tf.keras.utils.plot_model(model, show_layer_names=False, rankdir='LR')
+    # Config.set('CURDIR', os.getcwd())
+    # train_data, val_data, num_users, num_movies = loadData()
+    # train(train_data, val_data, num_users, num_movies)
 
 if __name__ == '__main__':
     main()
