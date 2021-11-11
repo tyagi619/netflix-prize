@@ -1,8 +1,8 @@
 """
 Usage:
     run.py train --train-src=<file> [options]
-    run.py recommend [options] MODEL_PATH TEST_SOURCE_FILE OUTPUT_FILE
-    run.py test [options] MODEL_PATH TEST_SOURCE_FILE TEST_TARGET_FILE OUTPUT_FILE
+    run.py recommend [options] MODEL_PATH USER_MAP MOVIE_MAP TEST_SOURCE_FILE OUTPUT_FILE
+    run.py test [options] MODEL_PATH USER_MAP MOVIE_MAP TEST_SOURCE_FILE TEST_TARGET_FILE OUTPUT_FILE
 
 Options:
     -h --help                               show this screen.
@@ -20,15 +20,16 @@ Options:
     --save-yval-to=<file>                   tgt validation data save path [default: ./output/y_test.csv]
     --save-user-map-to=<file>               user mapping save path [default: ./output/user.json]
     --save-movie-map-to=<file>              movie mapping save path [default: ./output/movie.json]
+    --map-input=<int>                       specifies whether to map input using mapping file [default: 0]
 """
 
+from datetime import datetime
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-
 import sys
 import json
 import logging
 from docopt import docopt
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 import numpy as np
 import pandas as pd
@@ -171,6 +172,8 @@ def train(args):
 
     dataframe = loadData(train_files)
     dataframe, num_users, num_movies = preprocessData(dataframe, args)
+    logging.info('num users: %d', num_users)
+    logging.info('num movies: %d', num_movies)
     train_data, val_data = getTrainTestData(dataframe, train_batch_size, args)
 
     model = Recommender(users=num_users, 
@@ -209,20 +212,138 @@ def train(args):
                         verbose=1
                        )
 
-def recommend(args):
-    pass
-
 def test(args):
+    
+    model_path = args['MODEL_PATH']
+    user_map_file = args['USER_MAP']
+    movie_map_file = args['MOVIE_MAP']
+    x_test_file = args['TEST_SOURCE_FILE']
+    y_test_file = args['TEST_TARGET_FILE']
+
+    batch_size = int(args['--batch-size'])
+    logging.info('batch size: %d', batch_size)
+    latent_dim = int(args['--latent-dim'])
+    logging.info('latent dim: %d', latent_dim)
+    use_bias = bool(int(args['--use-bias']))
+    logging.info('use bias: %d', use_bias)
+    use_global_bias = bool(int(args['--use-global-bias']))
+    logging.info('use global bias: %d', use_global_bias)
+    map_input = bool(int(args['--map-input']))
+    logging.info('map input: %d', map_input)
+    print('='*100)
+
+    try:
+        X_test = np.loadtxt(x_test_file, delimiter=',', dtype=int)
+        logging.info('loaded input file %s', x_test_file)
+    except:
+        logging.error('unable to read %s', x_test_file)
+        raise RuntimeError('Unable to read Input File')
+
+    try:
+        y_test = np.loadtxt(y_test_file, delimiter=',', dtype=float)
+        logging.info('loaded input file %s', y_test_file)
+    except:
+        logging.error('unable to read %s', y_test_file)
+        raise RuntimeError('Unable to read Target Input File')
+
+    if user_map_file:
+        try:
+            with open(user_map_file, 'r') as f:
+                user_map = json.loads(f.read())
+            logging.info('read %s success', user_map_file)
+        except Exception as e:
+            logging.info('%s', e)
+            user_map_file = None
+            logging.warning('unable to open user map file %s. setting user map file to None', user_map_file)
+
+    if movie_map_file:
+        try:
+            with open(movie_map_file, 'r') as f:
+                movie_map = json.loads(f.read())
+            logging.info('read %s success', movie_map_file)
+        except Exception as e:
+            logging.info('%s', e)
+            movie_map_file = None
+            logging.warning('unable to open movie map file %s. setting movie map file to None', movie_map_file)
+
+    if map_input:
+        if user_map_file:
+            X_test[:,0] = np.array([user_map[i] for i in X_test[:,0].tolist()])
+            num_users = len(user_map)
+            logging.info('num users : %d', num_users)
+        else:
+            logging.error('no mapping file found for user.')
+            raise RuntimeError('No mapping file found for user to map input.')
+        
+        if movie_map_file:
+            X_test[:,1] = np.array([movie_map[i] for i in X_test[:,1].tolist()])
+            num_movies = len(movie_map)
+            logging.info('num movies : %d', num_movies)
+        else:
+            logging.error('no mapping file found for user.')
+            raise RuntimeError('No mapping file found for movies to map input.')
+    else:
+        if user_map_file:
+            num_users = len(user_map)
+        else:
+            logging.warning('no mapping file specified for user. using max of input file to get num users')
+            num_users = np.max(X_test[:,0]).item()
+        logging.info('num users : %d', num_users)
+
+        if movie_map_file:
+            num_movies = len(movie_map)
+        else:
+            logging.warning('no mapping file specified for movie. using max of input file to get num movies')
+            num_movies = np.max(X_test[:,1]).item()
+        logging.info('num movies : %d', num_movies)
+
+    X_test = {'users': X_test[:,0], 'movies':X_test[:,1]}
+    print('='*100)
+
+    model = Recommender(users=num_users, 
+                        movies=num_movies,
+                        latent_dim=latent_dim,
+                        use_bias=use_bias,
+                        global_bias=use_global_bias)
+    model.load_weights(filepath=model_path).expect_partial()
+    logging.info('successfully loaded trained model weights')
+
+    model.compile(loss='mse',
+                  metrics=[tf.keras.metrics.RootMeanSquaredError()]
+                 )
+
+    loss = model.evaluate(x=X_test, y=y_test, batch_size=batch_size)
+    if type(loss) == type([]):
+        for metrics, value in zip(model.metrics_names, loss):
+            logging.info('%s : %0.4f', metrics, value)
+    else:
+        logging.info('%s : %0.4f', model.metrics_names[0], loss)
+
+    y_pred = model.predict(x=X_test, batch_size=batch_size)
+    np.savetxt(args['OUTPUT_FILE'], y_pred, fmt='%.1f', delimiter=',', newline='\n')
+    logging.info('saved output file to %s', args['OUTPUT_FILE'])
+
+def recommend(args):
     pass
 
 def main():
 
     args = docopt(__doc__)
+    
+    if args['train']:
+        loggerFile = 'logs/train-{}.log'.format(datetime.now().strftime('%Y%m%d-%H%M%S'))
+    elif args['test']:
+        loggerFile = 'logs/test-{}.log'.format(datetime.now().strftime('%Y%m%d-%H%M%S'))
+    elif args['recommend']:
+        loggerFile = 'logs/recommend-{}.log'.format(datetime.now().strftime('%Y%m%d-%H%M%S'))
+    else:
+        loggerFile = 'logs.logs.log'
+
     logging.basicConfig(level=logging.INFO,
                         format='%(asctime)s:%(levelname)s: %(message)s',
                         datefmt='%Y-%m-%d %H:%M:%S',
                         handlers=[
-                            logging.FileHandler('logs/logs.log',mode="w"),
+                            logging.FileHandler(loggerFile,mode="w"),
                             logging.StreamHandler(sys.stdout)
                         ]
                        )
