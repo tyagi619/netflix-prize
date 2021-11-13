@@ -111,7 +111,7 @@ def getTrainTestData(dataframe, batch_size, args):
     logging.info('splitting data into train-test...')
     X = dataframe[['User', 'Movie']].values
     y = dataframe['Rating'].values
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, shuffle=True)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, shuffle=True, random_state=int(args['--seed']))
     logging.info('train-test split complete')
     logging.info('X_train contains %d rows', X_train.shape[0])
     logging.info('X_val contains %d rows', X_test.shape[0])
@@ -316,13 +316,19 @@ def test(args):
                  )
 
     loss = model.evaluate(x=X_test, y=y_test, batch_size=batch_size)
+    y_pred = model.predict(x=X_test, batch_size=batch_size)
+
     if type(loss) == type([]):
         for metrics, value in zip(model.metrics_names, loss):
             logging.info('%s : %0.4f', metrics, value)
     else:
         logging.info('%s : %0.4f', model.metrics_names[0], loss)
 
-    y_pred = model.predict(x=X_test, batch_size=batch_size)
+    correct_pred = np.sum(np.where(abs(y_pred[:,0] - y_test) < 0.5, 1, 0))
+    logging.info('num correct predictions: %d/%d', correct_pred, y_test.shape[0])
+    var_pred = np.sum(np.square(y_pred[:,0] - y_test)) / y_test.shape[0]
+    logging.info('variance in pred data : %0.3f', var_pred)
+    
     np.savetxt(args['OUTPUT_FILE'], y_pred, fmt='%.1f', delimiter=',', newline='\n')
     logging.info('saved output file to %s', args['OUTPUT_FILE'])
 
@@ -410,7 +416,7 @@ def recommend(args):
 
     top_n_results = result.head(10).values
     for _, year, name, rating in top_n_results:
-        print('{:<45}({})   {}'.format(name, int(year), rating))
+        print('{:80}({})   {}'.format(name, int(year), rating))
 
 def main():
 
@@ -438,10 +444,13 @@ def main():
     tf.random.set_seed(seed)
 
     if args['train']:
+        logging.info('Train Mode')
         train(args)
     elif args['recommend']:
+        logging.info('Recommend Mode')
         recommend(args)
     elif args['test']:
+        logging.info('Test Mode')
         test(args)
     else:
         logging.error('invalid run mode. expected [train/test/recommend]')
