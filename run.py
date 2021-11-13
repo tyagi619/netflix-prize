@@ -1,12 +1,13 @@
 """
 Usage:
     run.py train --train-src=<file> [options]
-    run.py recommend [options] MODEL_PATH USER_MAP MOVIE_MAP TEST_SOURCE_FILE OUTPUT_FILE
+    run.py recommend [options] MODEL_PATH USER_MAP MOVIE_MAP USER_ID OUTPUT_FILE
     run.py test [options] MODEL_PATH USER_MAP MOVIE_MAP TEST_SOURCE_FILE TEST_TARGET_FILE OUTPUT_FILE
 
 Options:
     -h --help                               show this screen.
     --train-src=<file>                      train source file
+    --movie-name-file=<file>                csv mapping movie id to movie name[default: ./data/movie_titles.csv]
     --seed=<int>                            seed [default: 0]
     --batch-size=<int>                      batch size [default: 2048]
     --latent-dim=<int>                      latent dimension [default: 40]
@@ -250,6 +251,7 @@ def test(args):
         try:
             with open(user_map_file, 'r') as f:
                 user_map = json.loads(f.read())
+                user_map = {int(k):int(v) for k,v in user_map.items()}
             logging.info('read %s success', user_map_file)
         except Exception as e:
             logging.info('%s', e)
@@ -260,6 +262,7 @@ def test(args):
         try:
             with open(movie_map_file, 'r') as f:
                 movie_map = json.loads(f.read())
+                movie_map = {int(k):int(v) for k,v in movie_map.items()}
             logging.info('read %s success', movie_map_file)
         except Exception as e:
             logging.info('%s', e)
@@ -324,7 +327,90 @@ def test(args):
     logging.info('saved output file to %s', args['OUTPUT_FILE'])
 
 def recommend(args):
-    pass
+    
+    model_path = args['MODEL_PATH']
+    user_map_file = args['USER_MAP']
+    movie_map_file = args['MOVIE_MAP']
+    movie_names_file = args['--movie-name-file']
+
+    batch_size = int(args['--batch-size'])
+    logging.info('batch size: %d', batch_size)
+    latent_dim = int(args['--latent-dim'])
+    logging.info('latent dim: %d', latent_dim)
+    use_bias = bool(int(args['--use-bias']))
+    logging.info('use bias: %d', use_bias)
+    use_global_bias = bool(int(args['--use-global-bias']))
+    logging.info('use global bias: %d', use_global_bias)
+    map_input = bool(int(args['--map-input']))
+    logging.info('map input: %d', map_input)
+    print('='*100)
+
+    try:
+        with open(user_map_file, 'r') as f:
+            user_map = json.loads(f.read())
+            user_map = {int(k):int(v) for k,v in user_map.items()}
+        logging.info('read %s success', user_map_file)
+    except Exception as e:
+        logging.info('%s', e)
+        logging.error('unable to open user map file %s', user_map_file)
+        raise RuntimeError('User mapping file %s not found', user_map_file)
+
+    try:
+        with open(movie_map_file, 'r') as f:
+            movie_map = json.loads(f.read())
+            movie_map = {int(k):int(v) for k,v in movie_map.items()}
+        logging.info('read %s success', movie_map_file)
+    except Exception as e:
+        logging.info('%s', e)
+        logging.error('unable to open movie map file %s', movie_map_file)
+        raise RuntimeError('Movie mapping file %s not found', movie_map_file)
+
+    num_users = len(user_map)
+    logging.info('num users: %d', num_users)
+    num_movies = len(movie_map)
+    logging.info('num movies: %d', num_movies)
+
+    try:
+        movie_names = pd.read_csv(movie_names_file, names=['movie_id', 'year', 'name'])
+    except:
+        logging.error('unable to read movie names file %s', )
+        raise RuntimeError('Unable to read Input File')
+    
+    movie_names['movie_id'] = movie_names['movie_id'].map(movie_map)
+
+    if map_input:
+        user_id = user_map[int(args['USER_ID'])]
+    else:
+        user_id = int(args['USER_ID'])
+    
+    movies_list = np.array([i for i in range(num_movies)])
+    user_list = np.array([user_id for _ in range(num_movies)])
+    X_test = {'users': user_list, 'movies':movies_list}
+    print('='*100)
+
+    model = Recommender(users=num_users, 
+                        movies=num_movies,
+                        latent_dim=latent_dim,
+                        use_bias=use_bias,
+                        global_bias=use_global_bias)
+    model.load_weights(filepath=model_path).expect_partial()
+    logging.info('successfully loaded trained model weights')
+
+    logging.info('recommending movies for user id %d ...', user_id)
+    y_pred = model.predict(x=X_test, batch_size=batch_size)
+    result = pd.DataFrame({'ratings': y_pred[:,0]})
+    result = movie_names.join(result, on='movie_id', how='inner')
+
+    assert len(result) == num_movies, 'result must be same length as num_movies'
+
+    result.sort_values(by='ratings', ascending=False, inplace=True)
+    result.to_csv(args['OUTPUT_FILE'], index=False)
+    logging.info('saved recommendations to output file')
+    print('='*100)
+
+    top_n_results = result.head(10).values
+    for _, year, name, rating in top_n_results:
+        print('{:<45}({})   {}'.format(name, int(year), rating))
 
 def main():
 
