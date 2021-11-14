@@ -1,12 +1,13 @@
 """
 Usage:
-    run.py train --train-src=<file> [options]
+    run.py train --probe-src=<file> --train-src=<file> [options]
     run.py recommend [options] MODEL_PATH USER_MAP MOVIE_MAP USER_ID OUTPUT_FILE
     run.py test [options] MODEL_PATH USER_MAP MOVIE_MAP TEST_SOURCE_FILE TEST_TARGET_FILE OUTPUT_FILE
 
 Options:
     -h --help                               show this screen.
     --train-src=<file>                      train source file
+    --probe-src=<file>                      validation source file
     --movie-name-file=<file>                csv mapping movie id to movie name[default: ./data/movie_titles.csv]
     --seed=<int>                            seed [default: 0]
     --batch-size=<int>                      batch size [default: 2048]
@@ -21,7 +22,7 @@ Options:
     --save-yval-to=<file>                   tgt validation data save path [default: ./output/y_test.csv]
     --save-user-map-to=<file>               user mapping save path [default: ./output/user.json]
     --save-movie-map-to=<file>              movie mapping save path [default: ./output/movie.json]
-    --map-input=<int>                       specifies whether to map input using mapping file [default: 0]
+    --map-input=<int>                       specifies whether to map input using mapping file [default: 1]
 """
 
 from datetime import datetime
@@ -39,7 +40,7 @@ from sklearn.model_selection import train_test_split
 
 from Model import Recommender
 
-def readFile(filename):
+def readTrainFile(filename):
     dataframe = []
     with open(filename, "r") as f:
         movieId = None
@@ -63,25 +64,72 @@ def readFile(filename):
                                                                                      'Rating':float
                                                                                     })
 
-def loadData(inputFiles):
+def readProbeFile(filename):
+    dataframe = []
+    with open(filename, "r") as f:
+        movieId = None
+        while True:
+            line = f.readline()
+            if not line:
+                break
+
+            if line[-1] == '\n':
+                line = line[:-1]
+            
+            if line[-1] == ':':
+                movieId = int(line[:-1])
+            else:
+                userId = int(line.split(',')[0])
+                dataframe.append([userId, movieId])
+    dataframe = np.array(dataframe)
+    return pd.DataFrame(data=dataframe, columns=['User', 'Movie']).astype({'User':int, 
+                                                                           'Movie':int,
+                                                                         })
+
+def loadData(inputFiles, probe_file):
+
+    logging.info('reading probe data...')
+    probe_data = readProbeFile(probe_file)
+    logging.info('reading probe data complete')
+    
+    probe_list = []
     df_list = []
+    
     logging.info('reading input file...')
     for i,file in enumerate(inputFiles):
         logging.info('reading file: %d/%d', i+1, len(inputFiles))
-        df = readFile(file)
-        df_list.append(df)
+        train_df = readTrainFile(file)
+        train_set = train_df.merge(probe_data, how='outer', left_on=['User', 'Movie'], right_on=['User', 'Movie'], indicator=True)
+        train_df = train_set.loc[lambda x: x['_merge']=='left_only'][['User', 'Movie', 'Rating']].reset_index(drop=True)
+        probe_df = train_set.loc[lambda x: x['_merge']=='both'][['User', 'Movie', 'Rating']].reset_index(drop=True)
+        df_list.append(train_df)
+        probe_list.append(probe_df)
     logging.info('reading input files complete')
-    df = pd.concat(df_list, ignore_index=True)
-    logging.info('dataset contains %d rows', df.shape[0])
+    
+    train_df = pd.concat(df_list, ignore_index=True)
+    probe_df = pd.concat(probe_list, ignore_index=True)
+    logging.info('probe dataset contains %d rows', probe_df.shape[0])
+    logging.info('train dataset contains %d rows', train_df.shape[0])
+    logging.info('rows in training set: %d', train_df.shape[0] + probe_df.shape[0])
     print('='*100)
-    return df
+    return train_df, probe_df
 
-def preprocessData(dataframe, args):
+def preprocessData(train_data, probe_data, args):
+
+    logging.info('writing probe data to disk...')
+    np.savetxt(args['--save-xval-to'], probe_data[['User', 'Movie']].values, fmt='%d', delimiter=',', newline='\n')
+    np.savetxt(args['--save-yval-to'], probe_data[['Rating']].values, fmt='%.1f', delimiter=',', newline='\n')
+    logging.info('write probe data to %s and %s complete', args['--save-xval-to'], args['--save-yval-to'])
+    print('='*100)
+
     logging.info('mapping users to continuous series...')
-    unique_users = dataframe['User'].unique().tolist()
+    unique_users_probe = set(probe_data['User'].unique().tolist())
+    unique_users_train = set(train_data['User'].unique().tolist())
+    unique_users = list(unique_users_train.union(unique_users_probe))
     num_users = len(unique_users)
     user_mapping = {id:i for i, id in enumerate(unique_users)}
-    dataframe['User'] = dataframe['User'].map(user_mapping)
+    train_data['User'] = train_data['User'].map(user_mapping)
+    probe_data['User'] = probe_data['User'].map(user_mapping)
     logging.info('mapping users complete')
 
     logging.info('saving user mapping to disk...')
@@ -92,10 +140,13 @@ def preprocessData(dataframe, args):
     print('='*100)
 
     logging.info('mapping movies to continuous series...')
-    unique_movies = dataframe['Movie'].unique().tolist()
+    unique_movies_probe = set(probe_data['Movie'].unique().tolist())
+    unique_movies_train = set(train_data['Movie'].unique().tolist())
+    unique_movies = list(unique_movies_train.union(unique_movies_probe))
     num_movies = len(unique_movies)
     movie_mapping = {id:i for i, id in enumerate(unique_movies)}
-    dataframe['Movie'] = dataframe['Movie'].map(movie_mapping)
+    train_data['Movie'] = train_data['Movie'].map(movie_mapping)
+    probe_data['Movie'] = probe_data['Movie'].map(movie_mapping)
     logging.info('mapping movies complete')
 
     logging.info('saving movie mapping to disk...')
@@ -105,22 +156,16 @@ def preprocessData(dataframe, args):
     logging.info('saved movie mapping to %s', args['--save-movie-map-to'])
     print('='*100)
 
-    return dataframe, num_users, num_movies
+    return train_data, probe_data, num_users, num_movies
 
-def getTrainTestData(dataframe, batch_size, args):
-    logging.info('splitting data into train-test...')
-    X = dataframe[['User', 'Movie']].values
-    y = dataframe['Rating'].values
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, shuffle=True, random_state=int(args['--seed']))
-    logging.info('train-test split complete')
+def getTrainTestData(train_data, probe_data, batch_size, args):
+    
+    X_train = train_data[['User', 'Movie']].values
+    y_train = train_data[['Rating']].values
+    X_test  = probe_data[['User', 'Movie']].values
+    y_test  = probe_data[['Rating']].values 
     logging.info('X_train contains %d rows', X_train.shape[0])
     logging.info('X_val contains %d rows', X_test.shape[0])
-
-    logging.info('writing validation data to disk...')
-    np.savetxt(args['--save-xval-to'], X_test, fmt='%d', delimiter=',', newline='\n')
-    np.savetxt(args['--save-yval-to'], y_test, fmt='%.1f', delimiter=',', newline='\n')
-    logging.info('write validation data to %s and %s complete', args['--save-xval-to'], args['--save-yval-to'])
-    print('='*100)
 
     logging.info('converting train data to tensorflow Dataset....')
     x_train_user = tf.convert_to_tensor(X_train[:,0])
@@ -144,11 +189,8 @@ def getTrainTestData(dataframe, batch_size, args):
 
 def train(args):
 
-    if args['--train-src']:
-        train_files = args['--train-src'].split(',')
-    else:
-        logging.error('no input files provided for training')
-        raise RuntimeError('No input files for training.Use --train-src argument to pass input files')
+    train_files = args['--train-src'].split(',')
+    probe_file  = args['--probe-src']
     
     if len(train_files)==0:
         logging.error('empty input file list passed')
@@ -171,11 +213,11 @@ def train(args):
     model_save_path = args['--save-to']
     print('='*100)
 
-    dataframe = loadData(train_files)
-    dataframe, num_users, num_movies = preprocessData(dataframe, args)
+    train_data, probe_data = loadData(train_files, probe_file)
+    train_data, probe_data, num_users, num_movies = preprocessData(train_data, probe_data, args)
     logging.info('num users: %d', num_users)
     logging.info('num movies: %d', num_movies)
-    train_data, val_data = getTrainTestData(dataframe, train_batch_size, args)
+    train_data, val_data = getTrainTestData(train_data, probe_data, train_batch_size, args)
 
     model = Recommender(users=num_users, 
                         movies=num_movies,
@@ -272,16 +314,16 @@ def test(args):
     if map_input:
         if user_map_file:
             X_test[:,0] = np.array([user_map[i] for i in X_test[:,0].tolist()])
+            logging.info('map users using mapping file')
             num_users = len(user_map)
-            logging.info('num users : %d', num_users)
         else:
             logging.error('no mapping file found for user.')
             raise RuntimeError('No mapping file found for user to map input.')
         
         if movie_map_file:
             X_test[:,1] = np.array([movie_map[i] for i in X_test[:,1].tolist()])
+            logging.info('map movies using mapping file')
             num_movies = len(movie_map)
-            logging.info('num movies : %d', num_movies)
         else:
             logging.error('no mapping file found for user.')
             raise RuntimeError('No mapping file found for movies to map input.')
@@ -291,15 +333,15 @@ def test(args):
         else:
             logging.warning('no mapping file specified for user. using max of input file to get num users')
             num_users = np.max(X_test[:,0]).item()
-        logging.info('num users : %d', num_users)
 
         if movie_map_file:
             num_movies = len(movie_map)
         else:
             logging.warning('no mapping file specified for movie. using max of input file to get num movies')
             num_movies = np.max(X_test[:,1]).item()
-        logging.info('num movies : %d', num_movies)
 
+    logging.info('num users : %d', num_users)    
+    logging.info('num movies : %d', num_movies)
     X_test = {'users': X_test[:,0], 'movies':X_test[:,1]}
     print('='*100)
 
