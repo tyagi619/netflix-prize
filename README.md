@@ -18,7 +18,7 @@ the user and the movie. The features can be thought of comprising of various gen
 action, comedy, thriller, horror. If a user likes action and comedy, his feature vector will<br>
 represent this with a high value corresponding to these attributes and lower value for other<br>
 attributes. Similar is the case for movies. Thus, We can represent R as:<br>
-                $R = UM^T$
+<pre>                          <img src="https://render.githubusercontent.com/render/math?math=R = UM^{T}"></pre>
 
 Here is a hyperparameter and different values of k  could be tried to reach the most optimal<br>
 results. In my implementation, I have set k=40.<br>
@@ -26,7 +26,10 @@ results. In my implementation, I have set k=40.<br>
 Another factor to consider in predicting rating is the bias. Some users prefer to give an average<br>
 rating to movies they dislike or some may never give a very high rating to any movie. There might<br>
 be biases associated with movies as well. Movies with religious sentiments lie mostly on the extreme<br>
-ends of ratings. Thus, it makes sense to attach a bias with each user and movie.<br>
+ends of ratings. Thus, it makes sense to attach a bias with each user and movie. Thus, the final <br>
+equation will be:<br>
+<pre>                          <img src="https://render.githubusercontent.com/render/math?math=r_{ij} = u_{i}{m_j}^T %2B b_{ui} %2B b_{mj}"></pre>
+
 
 
 ## **How to run?**<br>
