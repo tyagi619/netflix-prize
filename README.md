@@ -18,7 +18,7 @@ the user and the movie. The features can be thought of comprising of various gen
 action, comedy, thriller, horror. If a user likes action and comedy, his feature vector will<br>
 represent this with a high value corresponding to these attributes and lower value for other<br>
 attributes. Similar is the case for movies. Thus, We can represent R as:<br>
-                $$R = UM^T$$
+                $R = UM^T$
 
 Here is a hyperparameter and different values of k  could be tried to reach the most optimal<br>
 results. In my implementation, I have set k=40.<br>
