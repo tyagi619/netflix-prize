@@ -48,5 +48,6 @@ class Recommender(Model):
         r = self._matrix(u, m)
         if self._use_bias:
             b = self._bias(u, m)
-            return tf.keras.layers.add([r,b])
-        return r
+            r = tf.keras.layers.add([r,b])
+        r = tf.keras.activations.sigmoid(r)
+        return tf.math.scalar_mul(5.0, r)
