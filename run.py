@@ -1,8 +1,8 @@
 """
 Usage:
-    run.py train --probe-src=<file> --train-src=<file> [options]
-    run.py recommend [options] MODEL_PATH USER_MAP MOVIE_MAP USER_ID OUTPUT_FILE
-    run.py test [options] MODEL_PATH USER_MAP MOVIE_MAP TEST_SOURCE_FILE TEST_TARGET_FILE OUTPUT_FILE
+    run.py train baseline --probe-src=<file> --train-src=<file> [options]
+    run.py recommend baseline [options] MODEL_PATH USER_MAP MOVIE_MAP USER_ID OUTPUT_FILE
+    run.py test baseline [options] MODEL_PATH USER_MAP MOVIE_MAP TEST_SOURCE_FILE TEST_TARGET_FILE OUTPUT_FILE
 
 Options:
     -h --help                               show this screen.
@@ -38,7 +38,7 @@ import pandas as pd
 import tensorflow as tf
 from sklearn.model_selection import train_test_split
 
-from Model import Recommender
+from Model import BayesianModel, Recommender
 
 def readTrainFile(filename):
     dataframe = []
@@ -187,7 +187,131 @@ def getTrainTestData(train_data, probe_data, batch_size, args):
     
     return train_data, val_data
 
-def train(args):
+def trainBaseline(args):
+
+    train_files = args['--train-src'].split(',')
+    probe_file  = args['--probe-src']
+    model_save_path = args['--save-to']
+    
+    if len(train_files)==0:
+        logging.error('empty input file list passed')
+        raise RuntimeError('No input files for training.Use --train-src argument to pass input files')
+
+    train_data, probe_data = loadData(train_files, probe_file)
+    train_data, probe_data, num_users, num_movies = preprocessData(train_data, probe_data, args)
+    logging.info('num users: %d', num_users)
+    logging.info('num movies: %d', num_movies)
+
+    model = BayesianModel(users=num_users,
+                          movies=num_movies,
+                          K=25
+                         )
+
+    model.train(ratings_df=train_data, save_to=model_save_path)
+
+def testBaseline(args):
+    
+    model_path = args['MODEL_PATH']
+    user_map_file = args['USER_MAP']
+    movie_map_file = args['MOVIE_MAP']
+    x_test_file = args['TEST_SOURCE_FILE']
+    y_test_file = args['TEST_TARGET_FILE']
+
+    map_input = bool(int(args['--map-input']))
+    logging.info('map input: %d', map_input)
+    print('='*100)
+
+    try:
+        X_test = np.loadtxt(x_test_file, delimiter=',', dtype=int)
+        logging.info('loaded input file %s', x_test_file)
+    except:
+        logging.error('unable to read %s', x_test_file)
+        raise RuntimeError('Unable to read Input File')
+
+    try:
+        y_test = np.loadtxt(y_test_file, delimiter=',', dtype=float)
+        logging.info('loaded input file %s', y_test_file)
+    except:
+        logging.error('unable to read %s', y_test_file)
+        raise RuntimeError('Unable to read Target Input File')
+
+    if user_map_file:
+        try:
+            with open(user_map_file, 'r') as f:
+                user_map = json.loads(f.read())
+                user_map = {int(k):int(v) for k,v in user_map.items()}
+            logging.info('read %s success', user_map_file)
+        except Exception as e:
+            logging.info('%s', e)
+            user_map_file = None
+            logging.warning('unable to open user map file %s. setting user map file to None', user_map_file)
+
+    if movie_map_file:
+        try:
+            with open(movie_map_file, 'r') as f:
+                movie_map = json.loads(f.read())
+                movie_map = {int(k):int(v) for k,v in movie_map.items()}
+            logging.info('read %s success', movie_map_file)
+        except Exception as e:
+            logging.info('%s', e)
+            movie_map_file = None
+            logging.warning('unable to open movie map file %s. setting movie map file to None', movie_map_file)
+
+    if map_input:
+        if user_map_file:
+            X_test[:,0] = np.array([user_map[i] for i in X_test[:,0].tolist()])
+            logging.info('map users using mapping file')
+            num_users = len(user_map)
+        else:
+            logging.error('no mapping file found for user.')
+            raise RuntimeError('No mapping file found for user to map input.')
+        
+        if movie_map_file:
+            X_test[:,1] = np.array([movie_map[i] for i in X_test[:,1].tolist()])
+            logging.info('map movies using mapping file')
+            num_movies = len(movie_map)
+        else:
+            logging.error('no mapping file found for user.')
+            raise RuntimeError('No mapping file found for movies to map input.')
+    else:
+        if user_map_file:
+            num_users = len(user_map)
+        else:
+            logging.warning('no mapping file specified for user. using max of input file to get num users')
+            num_users = np.max(X_test[:,0]).item()
+
+        if movie_map_file:
+            num_movies = len(movie_map)
+        else:
+            logging.warning('no mapping file specified for movie. using max of input file to get num movies')
+            num_movies = np.max(X_test[:,1]).item()
+
+    logging.info('num users : %d', num_users)    
+    logging.info('num movies : %d', num_movies)
+    X_test = {'users': X_test[:,0], 'movies':X_test[:,1]}
+    print('='*100)
+
+    model = BayesianModel(users=num_users, 
+                          movies=num_movies,
+                          K=25
+                         )
+    model.load_weights(filepath=model_path)
+    logging.info('successfully loaded trained model weights')
+
+    rmse, y_pred = model.test(X_test, y_test)
+
+    logging.info('RMSE : %0.4f', rmse)
+
+    correct_pred = np.sum(np.where(abs(y_pred - y_test) < 0.5, 1, 0))
+    logging.info('num correct predictions: %d/%d', correct_pred, y_test.shape[0])
+    var_pred = np.sum(np.square(y_pred - y_test)) / y_test.shape[0]
+    logging.info('variance in pred data : %0.3f', var_pred)
+    
+    np.savetxt(args['OUTPUT_FILE'], y_pred, fmt='%.1f', delimiter=',', newline='\n')
+    logging.info('saved output file to %s', args['OUTPUT_FILE'])
+
+
+def trainSVD(args):
 
     train_files = args['--train-src'].split(',')
     probe_file  = args['--probe-src']
@@ -487,13 +611,19 @@ def main():
 
     if args['train']:
         logging.info('Train Mode')
-        train(args)
+        if args['baseline']:
+            trainBaseline(args)
+        else:
+            trainSVD(args)
     elif args['recommend']:
         logging.info('Recommend Mode')
         recommend(args)
     elif args['test']:
         logging.info('Test Mode')
-        test(args)
+        if args['baseline']:
+            testBaseline(args)
+        else:
+            test(args)
     else:
         logging.error('invalid run mode. expected [train/test/recommend]')
         raise RuntimeError('invalid run mode')
