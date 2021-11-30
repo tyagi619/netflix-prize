@@ -1,8 +1,8 @@
 """
 Usage:
-    run.py train baseline --probe-src=<file> --train-src=<file> [options]
-    run.py recommend baseline [options] MODEL_PATH USER_MAP MOVIE_MAP USER_ID OUTPUT_FILE
-    run.py test baseline [options] MODEL_PATH USER_MAP MOVIE_MAP TEST_SOURCE_FILE TEST_TARGET_FILE OUTPUT_FILE
+    run.py train [baseline] --probe-src=<file> --train-src=<file> [options]
+    run.py recommend [baseline] [options] MODEL_PATH USER_MAP MOVIE_MAP USER_ID OUTPUT_FILE
+    run.py test [baseline] [options] MODEL_PATH USER_MAP MOVIE_MAP TEST_SOURCE_FILE TEST_TARGET_FILE OUTPUT_FILE
 
 Options:
     -h --help                               show this screen.
@@ -310,6 +310,79 @@ def testBaseline(args):
     np.savetxt(args['OUTPUT_FILE'], y_pred, fmt='%.1f', delimiter=',', newline='\n')
     logging.info('saved output file to %s', args['OUTPUT_FILE'])
 
+def recommendBaseline(args):
+    
+    model_path = args['MODEL_PATH']
+    user_map_file = args['USER_MAP']
+    movie_map_file = args['MOVIE_MAP']
+    movie_names_file = args['--movie-name-file']
+
+    map_input = bool(int(args['--map-input']))
+    logging.info('map input: %d', map_input)
+    print('='*100)
+
+    try:
+        with open(user_map_file, 'r') as f:
+            user_map = json.loads(f.read())
+            user_map = {int(k):int(v) for k,v in user_map.items()}
+        logging.info('read %s success', user_map_file)
+    except Exception as e:
+        logging.info('%s', e)
+        logging.error('unable to open user map file %s', user_map_file)
+        raise RuntimeError('User mapping file %s not found', user_map_file)
+
+    try:
+        with open(movie_map_file, 'r') as f:
+            movie_map = json.loads(f.read())
+            movie_map = {int(k):int(v) for k,v in movie_map.items()}
+        logging.info('read %s success', movie_map_file)
+    except Exception as e:
+        logging.info('%s', e)
+        logging.error('unable to open movie map file %s', movie_map_file)
+        raise RuntimeError('Movie mapping file %s not found', movie_map_file)
+
+    num_users = len(user_map)
+    logging.info('num users: %d', num_users)
+    num_movies = len(movie_map)
+    logging.info('num movies: %d', num_movies)
+
+    try:
+        movie_names = pd.read_csv(movie_names_file, names=['movie_id', 'year', 'name'])
+    except:
+        logging.error('unable to read movie names file %s', )
+        raise RuntimeError('Unable to read Input File')
+    
+    movie_names['movie_id'] = movie_names['movie_id'].map(movie_map)
+
+    if map_input:
+        user_id = user_map[int(args['USER_ID'])]
+    else:
+        user_id = int(args['USER_ID'])
+    
+    print('='*100)
+
+    model = BayesianModel(users=num_users, 
+                          movies=num_movies,
+                          K=25
+                         )
+    model.load_weights(filepath=model_path)
+    logging.info('successfully loaded trained model weights')
+
+    logging.info('recommending movies for user id %d ...', user_id)
+    y_pred = model.predict(user_id=user_id)
+    result = pd.DataFrame({'ratings': y_pred})
+    result = movie_names.join(result, on='movie_id', how='inner')
+
+    assert len(result) == num_movies, 'result must be same length as num_movies'
+
+    result.sort_values(by='ratings', ascending=False, inplace=True)
+    result.to_csv(args['OUTPUT_FILE'], index=False)
+    logging.info('saved recommendations to output file')
+    print('='*100)
+
+    top_n_results = result.head(10).values
+    for _, year, name, rating in top_n_results:
+        print('{:80}({})   {:.2f}'.format(name, int(year), rating))
 
 def trainSVD(args):
 
@@ -615,15 +688,18 @@ def main():
             trainBaseline(args)
         else:
             trainSVD(args)
-    elif args['recommend']:
-        logging.info('Recommend Mode')
-        recommend(args)
     elif args['test']:
-        logging.info('Test Mode')
+        logging.info('Recommend Mode')
         if args['baseline']:
             testBaseline(args)
         else:
             test(args)
+    elif args['recommend']:
+        logging.info('Test Mode')
+        if args['baseline']:
+            recommendBaseline(args)
+        else:
+            recommend(args)
     else:
         logging.error('invalid run mode. expected [train/test/recommend]')
         raise RuntimeError('invalid run mode')

@@ -96,11 +96,22 @@ class BayesianModel():
         if self.bi is None or self.bj is None:
             logging.error("No model weights. Either train model to call load_weights to load pretrained weights")
             raise RuntimeError("No model weights found")
-        print(type(X_test))
+
         y_pred = self.bi[X_test['movies']] + self.bj[X_test['users']]
-        rmse = np.sqrt(np.sum(np.square(y_pred-y_test))/y_pred.shape[0])
+        rmse = np.sqrt(np.mean((y_pred-y_test)**2))
         return rmse, y_pred
     
+    def predict(self, user_id):
+        if self.bi is None or self.bj is None:
+            logging.error("No model weights. Either train model to call load_weights to load pretrained weights")
+            raise RuntimeError("No model weights found")
+
+        movies_list = np.array([i for i in range(self.num_movies)])
+        user_list = np.array([user_id for _ in range(self.num_movies)])
+        X_test = {'users': user_list, 'movies':movies_list}
+        y_pred = self.bi[X_test['movies']] + self.bj[X_test['users']]
+        return y_pred
+
     def load_weights(self, filepath):
         try:
             self.bi = np.loadtxt(filepath + '/bi.csv', delimiter=',')
