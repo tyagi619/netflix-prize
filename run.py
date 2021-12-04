@@ -1,8 +1,8 @@
 """
 Usage:
-    run.py train [baseline] --probe-src=<file> --train-src=<file> [options]
-    run.py recommend [baseline] [options] MODEL_PATH USER_MAP MOVIE_MAP USER_ID OUTPUT_FILE
-    run.py test [baseline] [options] MODEL_PATH USER_MAP MOVIE_MAP TEST_SOURCE_FILE TEST_TARGET_FILE OUTPUT_FILE
+    run.py train [v1] [v2] [v3] [v4] --probe-src=<file> --train-src=<file> [options]
+    run.py recommend [v1] [v2] [v3] [v4] [options] MODEL_PATH USER_MAP MOVIE_MAP USER_ID OUTPUT_FILE
+    run.py test [v1] [v2] [v3] [v4] [options] MODEL_PATH USER_MAP MOVIE_MAP TEST_SOURCE_FILE TEST_TARGET_FILE OUTPUT_FILE
 
 Options:
     -h --help                               show this screen.
@@ -15,8 +15,8 @@ Options:
     --max-epoch=<int>                       max epoch [default: 10]
     --patience=<int>                        wait for how many iterations to end training [default: 2]
     --lr=<float>                            learning rate [default: 0.001]
-    --use-bias=<int>                        include user and movie bias paramters in learning [default: 0]
-    --use-global-bias=<int>                 include global bias parameter in learning [default: 0]
+    --K=<float>                             bayesian constant for average [default: 25]
+    --use-sigmoid=<int>                     use non-linerity on top of SVD [default: 0]
     --save-to=<file>                        model save path [default: ./output/model]
     --save-xval-to=<file>                   src validation data save path [default: ./output/x_test.csv]
     --save-yval-to=<file>                   tgt validation data save path [default: ./output/y_test.csv]
@@ -38,7 +38,7 @@ import pandas as pd
 import tensorflow as tf
 from sklearn.model_selection import train_test_split
 
-from Model import BayesianModel, Recommender
+from Model import BayesianModel, SimpleSVD, SVDImproved
 
 def readTrainFile(filename):
     dataframe = []
@@ -87,7 +87,6 @@ def readProbeFile(filename):
                                                                          })
 
 def loadData(inputFiles, probe_file):
-
     logging.info('reading probe data...')
     probe_data = readProbeFile(probe_file)
     logging.info('reading probe data complete')
@@ -111,16 +110,13 @@ def loadData(inputFiles, probe_file):
     logging.info('probe dataset contains %d rows', probe_df.shape[0])
     logging.info('train dataset contains %d rows', train_df.shape[0])
     logging.info('rows in training set: %d', train_df.shape[0] + probe_df.shape[0])
-    print('='*100)
     return train_df, probe_df
 
 def preprocessData(train_data, probe_data, args):
-
     logging.info('writing probe data to disk...')
     np.savetxt(args['--save-xval-to'], probe_data[['User', 'Movie']].values, fmt='%d', delimiter=',', newline='\n')
     np.savetxt(args['--save-yval-to'], probe_data[['Rating']].values, fmt='%.1f', delimiter=',', newline='\n')
     logging.info('write probe data to %s and %s complete', args['--save-xval-to'], args['--save-yval-to'])
-    print('='*100)
 
     logging.info('mapping users to continuous series...')
     unique_users_probe = set(probe_data['User'].unique().tolist())
@@ -137,7 +133,6 @@ def preprocessData(train_data, probe_data, args):
     with open(userMappingFile, "w") as f:
         json.dump(user_mapping, f)
     logging.info('saved user mapping to %s', args['--save-user-map-to'])
-    print('='*100)
 
     logging.info('mapping movies to continuous series...')
     unique_movies_probe = set(probe_data['Movie'].unique().tolist())
@@ -154,12 +149,10 @@ def preprocessData(train_data, probe_data, args):
     with open(movieMappingFile, "w") as f:
         json.dump(movie_mapping, f)
     logging.info('saved movie mapping to %s', args['--save-movie-map-to'])
-    print('='*100)
 
     return train_data, probe_data, num_users, num_movies
 
-def getTrainTestData(train_data, probe_data, batch_size, args):
-    
+def getTfDataset(train_data, probe_data, batch_size, args):
     X_train = train_data[['User', 'Movie']].values
     y_train = train_data[['Rating']].values
     X_test  = probe_data[['User', 'Movie']].values
@@ -183,43 +176,30 @@ def getTrainTestData(train_data, probe_data, batch_size, args):
     val_data = tf.data.Dataset.from_tensor_slices(({'users':x_val_user, 'movies':x_val_movie}, y_val))
     val_data = val_data.batch(batch_size)
     logging.info('validation data converted to tensorflow Dataset')
-    print('='*100)
     
     return train_data, val_data
 
-def trainBaseline(args):
-
+def getDataTrain(args):
     train_files = args['--train-src'].split(',')
     probe_file  = args['--probe-src']
-    model_save_path = args['--save-to']
-    
+    train_batch_size = int(args['--batch-size'])
+
     if len(train_files)==0:
         logging.error('empty input file list passed')
         raise RuntimeError('No input files for training.Use --train-src argument to pass input files')
 
-    train_data, probe_data = loadData(train_files, probe_file)
-    train_data, probe_data, num_users, num_movies = preprocessData(train_data, probe_data, args)
-    logging.info('num users: %d', num_users)
-    logging.info('num movies: %d', num_movies)
+    train_df, probe_df = loadData(train_files, probe_file)
+    train_data, probe_data, num_users, num_movies = preprocessData(train_df, probe_df, args)
+    train_data, val_data = getTfDataset(train_data, probe_data, train_batch_size, args)
 
-    model = BayesianModel(users=num_users,
-                          movies=num_movies,
-                          K=25
-                         )
+    return train_data, val_data, train_df, num_users, num_movies
 
-    model.train(ratings_df=train_data, save_to=model_save_path)
-
-def testBaseline(args):
-    
-    model_path = args['MODEL_PATH']
+def getDataTest(args):
     user_map_file = args['USER_MAP']
     movie_map_file = args['MOVIE_MAP']
     x_test_file = args['TEST_SOURCE_FILE']
     y_test_file = args['TEST_TARGET_FILE']
-
     map_input = bool(int(args['--map-input']))
-    logging.info('map input: %d', map_input)
-    print('='*100)
 
     try:
         X_test = np.loadtxt(x_test_file, delimiter=',', dtype=int)
@@ -286,379 +266,353 @@ def testBaseline(args):
             logging.warning('no mapping file specified for movie. using max of input file to get num movies')
             num_movies = np.max(X_test[:,1]).item()
 
-    logging.info('num users : %d', num_users)    
-    logging.info('num movies : %d', num_movies)
     X_test = {'users': X_test[:,0], 'movies':X_test[:,1]}
+
+    return X_test, y_test, num_users, num_movies
+
+def getDataRecommend(args):
+    user_map_file = args['USER_MAP']
+    movie_map_file = args['MOVIE_MAP']
+    movie_names_file = args['--movie-name-file']
+    map_input = bool(int(args['--map-input']))
+
+    try:
+        with open(user_map_file, 'r') as f:
+            user_map = json.loads(f.read())
+            user_map = {int(k):int(v) for k,v in user_map.items()}
+        logging.info('read %s success', user_map_file)
+    except Exception as e:
+        logging.info('%s', e)
+        logging.error('unable to open user map file %s', user_map_file)
+        raise RuntimeError('User mapping file %s not found', user_map_file)
+
+    try:
+        with open(movie_map_file, 'r') as f:
+            movie_map = json.loads(f.read())
+            movie_map = {int(k):int(v) for k,v in movie_map.items()}
+        logging.info('read %s success', movie_map_file)
+    except Exception as e:
+        logging.info('%s', e)
+        logging.error('unable to open movie map file %s', movie_map_file)
+        raise RuntimeError('Movie mapping file %s not found', movie_map_file)
+
+    num_users = len(user_map)
+    num_movies = len(movie_map)
+
+    try:
+        movie_names = pd.read_csv(movie_names_file, names=['movie_id', 'year', 'name'])
+    except:
+        logging.error('unable to read movie names file %s', )
+        raise RuntimeError('Unable to read Input File')
+    
+    movie_names['movie_id'] = movie_names['movie_id'].map(movie_map)
+
+    if map_input:
+        user_id = user_map[int(args['USER_ID'])]
+    else:
+        user_id = int(args['USER_ID'])
+    
+    return user_id, movie_names, num_users, num_movies
+
+def train(args):
+    train_files = args['--train-src'].split(',')
+    logging.info('train files : %s', ', '.join(train_files))
+    
+    probe_file  = args['--probe-src']
+    logging.info('probe file : %s', probe_file)
+
+    model_save_path = args['--save-to']
+    logging.info('model save path : %s', model_save_path)
+
+    K = float(args['--K'])
+    logging.info('K: %0.1f', K)
+
+    if not args['v1']:
+        train_batch_size = int(args['--batch-size'])
+        logging.info('batch size: %d', train_batch_size)
+        
+        latent_dim = int(args['--latent-dim'])
+        logging.info('latent dim: %d', latent_dim)
+        
+        max_epochs = int(args['--max-epoch'])
+        logging.info('max epochs: %d', max_epochs)
+        
+        patience = int(args['--patience'])
+        logging.info('patience: %d', patience)
+        
+        lr = float(args['--lr'])
+        logging.info('learning rate: %.4f', lr)
+
+        use_sigmoid = bool(int(args['--use-sigmoid']))
+        logging.info('use sigmoid: %d', use_sigmoid)
+
     print('='*100)
 
-    model = BayesianModel(users=num_users, 
+    train_data, val_data, train_df, num_users, num_movies = getDataTrain(args)
+    logging.info('num users: %d', num_users)
+    logging.info('num movies: %d', num_movies)
+    print('='*100)
+
+    if args['v1']:
+        model = BayesianModel(users=num_users,
+                              movies=num_movies,
+                              K=K
+                             )
+    elif args['v2']:
+        model = SimpleSVD(users=num_users,
                           movies=num_movies,
-                          K=25
+                          latent_dim=latent_dim,
+                          use_sigmoid=use_sigmoid
                          )
-    model.load_weights(filepath=model_path)
-    logging.info('successfully loaded trained model weights')
+        model.summary()
+    elif args['v3']:
+        model = SVDImproved(users=num_users,
+                            movies=num_movies,
+                            latent_dim=latent_dim,
+                            K=K,
+                            data=train_df,
+                            use_sigmoid=use_sigmoid
+                           )
+        model.summary()
+    elif args['v4']:
+        model = SVDImproved(users=num_users,
+                            movies=num_movies,
+                            latent_dim=latent_dim,
+                            K=K,
+                            data=train_df,
+                            use_sigmoid=use_sigmoid
+                           )
+        model.summary()
+    else:
+        logging.error('invalid model choice')
+        raise RuntimeError('Invalid model choice')
+    
+    if args['v1']:
+        model.train(ratings_df=train_df, save_to=model_save_path)
+    else:
+        print('='*100)
+        optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
+        model.compile(loss='mse',
+                      optimizer=optimizer,
+                      metrics=[tf.keras.metrics.RootMeanSquaredError()]
+                     )
 
-    rmse, y_pred = model.test(X_test, y_test)
+        modelCheckpoint = tf.keras.callbacks.ModelCheckpoint(filepath=model_save_path,
+                                                            monitor='val_root_mean_squared_error',
+                                                            save_best_only=True,
+                                                            mode='min',
+                                                            save_freq='epoch',
+                                                            save_weights_only=True,
+                                                            verbose=1
+                                                            )
+        
+        earlyStopping = tf.keras.callbacks.EarlyStopping(monitor='val_root_mean_squared_error',
+                                                        mode='min',
+                                                        min_delta=0.01,
+                                                        patience=patience,
+                                                        verbose=1)
+        
+        model.fit(x=train_data, 
+                  validation_data=val_data, 
+                  epochs=max_epochs, 
+                  callbacks=[modelCheckpoint, earlyStopping],
+                  verbose=1
+                 )
 
-    logging.info('RMSE : %0.4f', rmse)
+def test(args):
+    model_path = args['MODEL_PATH']
+    logging.info('model path: %s', model_path)
+
+    user_map_file = args['USER_MAP']
+    logging.info('user map file: %s', user_map_file)
+
+    movie_map_file = args['MOVIE_MAP']
+    logging.info('movie_map_file: %s', movie_map_file)
+
+    x_test_file = args['TEST_SOURCE_FILE']
+    logging.info('X_test file: %s', x_test_file)
+
+    y_test_file = args['TEST_TARGET_FILE']
+    logging.info('y_test file: %s', y_test_file)
+
+    map_input = bool(int(args['--map-input']))
+    logging.info('map input: %d', map_input)
+
+    K = float(args['--K'])
+    logging.info('K: %0.1f', K)
+
+    if not args['v1']:
+        batch_size = int(args['--batch-size'])
+        logging.info('batch size: %d', batch_size)
+        
+        latent_dim = int(args['--latent-dim'])
+        logging.info('latent dim: %d', latent_dim)
+
+        use_sigmoid = bool(int(args['--use-sigmoid']))
+        logging.info('use sigmoid: %d', use_sigmoid)
+    
+    print('='*100)
+
+    X_test, y_test, num_users, num_movies = getDataTest(args)
+    logging.info('num users: %d', num_users)
+    logging.info('num movies: %d', num_movies)
+    print('='*100)
+
+    if args['v1']:
+        model = BayesianModel(users=num_users,
+                              movies=num_movies,
+                              K=K
+                             )
+        model.load_weights(filepath=model_path)
+    elif args['v2']:
+        model = SimpleSVD(users=num_users,
+                          movies=num_movies,
+                          latent_dim=latent_dim,
+                          use_sigmoid=use_sigmoid
+                         )
+        model.load_weights(filepath=model_path).expect_partial()
+    elif args['v3']:
+        model = SVDImproved(users=num_users,
+                            movies=num_movies,
+                            latent_dim=latent_dim,
+                            K=K,
+                            data=None,
+                            use_sigmoid=use_sigmoid
+                           )
+        model.load_weights(filepath=model_path).expect_partial()
+    elif args['v4']:
+        model = SVDImproved(users=num_users,
+                            movies=num_movies,
+                            latent_dim=latent_dim,
+                            K=K,
+                            data=None,
+                            use_sigmoid=use_sigmoid
+                           )
+        model.load_weights(filepath=model_path).expect_partial()
+    else:
+        logging.error('invalid model choice')
+        raise RuntimeError('Invalid model choice')
+    
+    logging.info('successfully loaded pre-trained model')
+    print('='*100)
+
+    if args['v1']:
+        rmse, y_pred = model.test(X_test=X_test, y_test=y_test)
+        logging.info('rmse: %0.4f', rmse)
+    else:
+        model.compile(loss='mse',
+                      metrics=[tf.keras.metrics.RootMeanSquaredError()]
+                     )
+
+        loss = model.evaluate(x=X_test, y=y_test, batch_size=batch_size)
+        y_pred = model.predict(x=X_test, batch_size=batch_size)[:,0]
+
+        if type(loss) == type([]):
+            for metrics, value in zip(model.metrics_names, loss):
+                logging.info('%s : %0.4f', metrics, value)
+        else:
+            logging.info('%s : %0.4f', model.metrics_names[0], loss)
 
     correct_pred = np.sum(np.where(abs(y_pred - y_test) < 0.5, 1, 0))
     logging.info('num correct predictions: %d/%d', correct_pred, y_test.shape[0])
+    
     var_pred = np.sum(np.square(y_pred - y_test)) / y_test.shape[0]
     logging.info('variance in pred data : %0.3f', var_pred)
     
     np.savetxt(args['OUTPUT_FILE'], y_pred, fmt='%.1f', delimiter=',', newline='\n')
     logging.info('saved output file to %s', args['OUTPUT_FILE'])
 
-def recommendBaseline(args):
-    
+def recommend(args):
+    logging.info('user id: %s', args['USER_ID'])
+
     model_path = args['MODEL_PATH']
+    logging.info('model path: %s', model_path)
+
     user_map_file = args['USER_MAP']
+    logging.info('user map file: %s', user_map_file)
+
     movie_map_file = args['MOVIE_MAP']
+    logging.info('movie map file: %s', movie_map_file)
+
     movie_names_file = args['--movie-name-file']
+    logging.info('movie metadata file: %s', movie_names_file)
 
     map_input = bool(int(args['--map-input']))
     logging.info('map input: %d', map_input)
+
+    K = float(args['--K'])
+    logging.info('K: %0.1f', K)
+
+    if not args['v1']:
+        batch_size = int(args['--batch-size'])
+        logging.info('batch size: %d', batch_size)
+
+        latent_dim = int(args['--latent-dim'])
+        logging.info('latent dim: %d', latent_dim)
+
+        use_sigmoid = bool(int(args['--use-sigmoid']))
+        logging.info('use sigmoid: %d', use_sigmoid)
+
     print('='*100)
 
-    try:
-        with open(user_map_file, 'r') as f:
-            user_map = json.loads(f.read())
-            user_map = {int(k):int(v) for k,v in user_map.items()}
-        logging.info('read %s success', user_map_file)
-    except Exception as e:
-        logging.info('%s', e)
-        logging.error('unable to open user map file %s', user_map_file)
-        raise RuntimeError('User mapping file %s not found', user_map_file)
+    user_id, movie_names, num_users, num_movies = getDataRecommend(args)
 
-    try:
-        with open(movie_map_file, 'r') as f:
-            movie_map = json.loads(f.read())
-            movie_map = {int(k):int(v) for k,v in movie_map.items()}
-        logging.info('read %s success', movie_map_file)
-    except Exception as e:
-        logging.info('%s', e)
-        logging.error('unable to open movie map file %s', movie_map_file)
-        raise RuntimeError('Movie mapping file %s not found', movie_map_file)
-
-    num_users = len(user_map)
-    logging.info('num users: %d', num_users)
-    num_movies = len(movie_map)
-    logging.info('num movies: %d', num_movies)
-
-    try:
-        movie_names = pd.read_csv(movie_names_file, names=['movie_id', 'year', 'name'])
-    except:
-        logging.error('unable to read movie names file %s', )
-        raise RuntimeError('Unable to read Input File')
-    
-    movie_names['movie_id'] = movie_names['movie_id'].map(movie_map)
-
-    if map_input:
-        user_id = user_map[int(args['USER_ID'])]
-    else:
-        user_id = int(args['USER_ID'])
-    
-    print('='*100)
-
-    model = BayesianModel(users=num_users, 
+    if args['v1']:
+        model = BayesianModel(users=num_users,
+                              movies=num_movies,
+                              K=K
+                             )
+        model.load_weights(filepath=model_path)
+    elif args['v2']:
+        model = SimpleSVD(users=num_users,
                           movies=num_movies,
-                          K=25
+                          latent_dim=latent_dim,
+                          use_sigmoid=use_sigmoid
                          )
-    model.load_weights(filepath=model_path)
-    logging.info('successfully loaded trained model weights')
+        model.load_weights(filepath=model_path).expect_partial()
+    elif args['v3']:
+        model = SVDImproved(users=num_users,
+                            movies=num_movies,
+                            latent_dim=latent_dim,
+                            K=K,
+                            data=None,
+                            use_sigmoid=use_sigmoid
+                           )
+        model.load_weights(filepath=model_path).expect_partial()
+    elif args['v4']:
+        model = SVDImproved(users=num_users,
+                            movies=num_movies,
+                            latent_dim=latent_dim,
+                            K=K,
+                            data=None,
+                            use_sigmoid=use_sigmoid
+                           )
+        model.load_weights(filepath=model_path).expect_partial()
+    else:
+        logging.error('invalid model choice')
+        raise RuntimeError('Invalid model choice')
+    
+    logging.info('successfully loaded pre-trained model')
+    print('='*100)
 
     logging.info('recommending movies for user id %d ...', user_id)
-    y_pred = model.predict(user_id=user_id)
+    if args['v1']:
+        y_pred = model.recommend(user_id=user_id)
+    else:
+        y_pred = model.recommend(user_id=user_id, batch_size=batch_size)
+
     result = pd.DataFrame({'ratings': y_pred})
     result = movie_names.join(result, on='movie_id', how='inner')
-
     assert len(result) == num_movies, 'result must be same length as num_movies'
-
     result.sort_values(by='ratings', ascending=False, inplace=True)
     result.to_csv(args['OUTPUT_FILE'], index=False)
     logging.info('saved recommendations to output file')
     print('='*100)
-
     top_n_results = result.head(10).values
     for _, year, name, rating in top_n_results:
         print('{:80}({})   {:.2f}'.format(name, int(year), rating))
 
-def trainSVD(args):
-
-    train_files = args['--train-src'].split(',')
-    probe_file  = args['--probe-src']
-    
-    if len(train_files)==0:
-        logging.error('empty input file list passed')
-        raise RuntimeError('No input files for training.Use --train-src argument to pass input files')
-
-    train_batch_size = int(args['--batch-size'])
-    logging.info('batch size: %d', train_batch_size)
-    latent_dim = int(args['--latent-dim'])
-    logging.info('latent dim: %d', latent_dim)
-    max_epochs = int(args['--max-epoch'])
-    logging.info('max epochs: %d', max_epochs)
-    patience = int(args['--patience'])
-    logging.info('patience: %d', patience)
-    lr = float(args['--lr'])
-    logging.info('learning rate: %.4f', lr)
-    use_bias = bool(int(args['--use-bias']))
-    logging.info('use bias: %d', use_bias)
-    use_global_bias = bool(int(args['--use-global-bias']))
-    logging.info('use global bias: %d', use_global_bias)
-    model_save_path = args['--save-to']
-    print('='*100)
-
-    train_data, probe_data = loadData(train_files, probe_file)
-    train_data, probe_data, num_users, num_movies = preprocessData(train_data, probe_data, args)
-    logging.info('num users: %d', num_users)
-    logging.info('num movies: %d', num_movies)
-    train_data, val_data = getTrainTestData(train_data, probe_data, train_batch_size, args)
-
-    model = Recommender(users=num_users, 
-                        movies=num_movies,
-                        latent_dim=latent_dim,
-                        use_bias=use_bias,
-                        global_bias=use_global_bias)
-    print(model.summary())
-    print('='*100)
-
-    optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
-    model.compile(loss='mse',
-                  optimizer=optimizer,
-                  metrics=[tf.keras.metrics.RootMeanSquaredError()]
-                 )
-
-    modelCheckpoint = tf.keras.callbacks.ModelCheckpoint(filepath=model_save_path,
-                                                         monitor='val_root_mean_squared_error',
-                                                         save_best_only=True,
-                                                         mode='min',
-                                                         save_freq='epoch',
-                                                         save_weights_only=True,
-                                                         verbose=1
-                                                        )
-    
-    earlyStopping = tf.keras.callbacks.EarlyStopping(monitor='val_root_mean_squared_error',
-                                                     mode='min',
-                                                     min_delta=0.01,
-                                                     patience=patience,
-                                                     verbose=1)
-    
-    history = model.fit(x=train_data, 
-                        validation_data=val_data, 
-                        epochs=max_epochs, 
-                        callbacks=[modelCheckpoint, earlyStopping],
-                        verbose=1
-                       )
-
-def test(args):
-    
-    model_path = args['MODEL_PATH']
-    user_map_file = args['USER_MAP']
-    movie_map_file = args['MOVIE_MAP']
-    x_test_file = args['TEST_SOURCE_FILE']
-    y_test_file = args['TEST_TARGET_FILE']
-
-    batch_size = int(args['--batch-size'])
-    logging.info('batch size: %d', batch_size)
-    latent_dim = int(args['--latent-dim'])
-    logging.info('latent dim: %d', latent_dim)
-    use_bias = bool(int(args['--use-bias']))
-    logging.info('use bias: %d', use_bias)
-    use_global_bias = bool(int(args['--use-global-bias']))
-    logging.info('use global bias: %d', use_global_bias)
-    map_input = bool(int(args['--map-input']))
-    logging.info('map input: %d', map_input)
-    print('='*100)
-
-    try:
-        X_test = np.loadtxt(x_test_file, delimiter=',', dtype=int)
-        logging.info('loaded input file %s', x_test_file)
-    except:
-        logging.error('unable to read %s', x_test_file)
-        raise RuntimeError('Unable to read Input File')
-
-    try:
-        y_test = np.loadtxt(y_test_file, delimiter=',', dtype=float)
-        logging.info('loaded input file %s', y_test_file)
-    except:
-        logging.error('unable to read %s', y_test_file)
-        raise RuntimeError('Unable to read Target Input File')
-
-    if user_map_file:
-        try:
-            with open(user_map_file, 'r') as f:
-                user_map = json.loads(f.read())
-                user_map = {int(k):int(v) for k,v in user_map.items()}
-            logging.info('read %s success', user_map_file)
-        except Exception as e:
-            logging.info('%s', e)
-            user_map_file = None
-            logging.warning('unable to open user map file %s. setting user map file to None', user_map_file)
-
-    if movie_map_file:
-        try:
-            with open(movie_map_file, 'r') as f:
-                movie_map = json.loads(f.read())
-                movie_map = {int(k):int(v) for k,v in movie_map.items()}
-            logging.info('read %s success', movie_map_file)
-        except Exception as e:
-            logging.info('%s', e)
-            movie_map_file = None
-            logging.warning('unable to open movie map file %s. setting movie map file to None', movie_map_file)
-
-    if map_input:
-        if user_map_file:
-            X_test[:,0] = np.array([user_map[i] for i in X_test[:,0].tolist()])
-            logging.info('map users using mapping file')
-            num_users = len(user_map)
-        else:
-            logging.error('no mapping file found for user.')
-            raise RuntimeError('No mapping file found for user to map input.')
-        
-        if movie_map_file:
-            X_test[:,1] = np.array([movie_map[i] for i in X_test[:,1].tolist()])
-            logging.info('map movies using mapping file')
-            num_movies = len(movie_map)
-        else:
-            logging.error('no mapping file found for user.')
-            raise RuntimeError('No mapping file found for movies to map input.')
-    else:
-        if user_map_file:
-            num_users = len(user_map)
-        else:
-            logging.warning('no mapping file specified for user. using max of input file to get num users')
-            num_users = np.max(X_test[:,0]).item()
-
-        if movie_map_file:
-            num_movies = len(movie_map)
-        else:
-            logging.warning('no mapping file specified for movie. using max of input file to get num movies')
-            num_movies = np.max(X_test[:,1]).item()
-
-    logging.info('num users : %d', num_users)    
-    logging.info('num movies : %d', num_movies)
-    X_test = {'users': X_test[:,0], 'movies':X_test[:,1]}
-    print('='*100)
-
-    model = Recommender(users=num_users, 
-                        movies=num_movies,
-                        latent_dim=latent_dim,
-                        use_bias=use_bias,
-                        global_bias=use_global_bias)
-    model.load_weights(filepath=model_path).expect_partial()
-    logging.info('successfully loaded trained model weights')
-
-    model.compile(loss='mse',
-                  metrics=[tf.keras.metrics.RootMeanSquaredError()]
-                 )
-
-    loss = model.evaluate(x=X_test, y=y_test, batch_size=batch_size)
-    y_pred = model.predict(x=X_test, batch_size=batch_size)
-
-    if type(loss) == type([]):
-        for metrics, value in zip(model.metrics_names, loss):
-            logging.info('%s : %0.4f', metrics, value)
-    else:
-        logging.info('%s : %0.4f', model.metrics_names[0], loss)
-
-    correct_pred = np.sum(np.where(abs(y_pred[:,0] - y_test) < 0.5, 1, 0))
-    logging.info('num correct predictions: %d/%d', correct_pred, y_test.shape[0])
-    var_pred = np.sum(np.square(y_pred[:,0] - y_test)) / y_test.shape[0]
-    logging.info('variance in pred data : %0.3f', var_pred)
-    
-    np.savetxt(args['OUTPUT_FILE'], y_pred, fmt='%.1f', delimiter=',', newline='\n')
-    logging.info('saved output file to %s', args['OUTPUT_FILE'])
-
-def recommend(args):
-    
-    model_path = args['MODEL_PATH']
-    user_map_file = args['USER_MAP']
-    movie_map_file = args['MOVIE_MAP']
-    movie_names_file = args['--movie-name-file']
-
-    batch_size = int(args['--batch-size'])
-    logging.info('batch size: %d', batch_size)
-    latent_dim = int(args['--latent-dim'])
-    logging.info('latent dim: %d', latent_dim)
-    use_bias = bool(int(args['--use-bias']))
-    logging.info('use bias: %d', use_bias)
-    use_global_bias = bool(int(args['--use-global-bias']))
-    logging.info('use global bias: %d', use_global_bias)
-    map_input = bool(int(args['--map-input']))
-    logging.info('map input: %d', map_input)
-    print('='*100)
-
-    try:
-        with open(user_map_file, 'r') as f:
-            user_map = json.loads(f.read())
-            user_map = {int(k):int(v) for k,v in user_map.items()}
-        logging.info('read %s success', user_map_file)
-    except Exception as e:
-        logging.info('%s', e)
-        logging.error('unable to open user map file %s', user_map_file)
-        raise RuntimeError('User mapping file %s not found', user_map_file)
-
-    try:
-        with open(movie_map_file, 'r') as f:
-            movie_map = json.loads(f.read())
-            movie_map = {int(k):int(v) for k,v in movie_map.items()}
-        logging.info('read %s success', movie_map_file)
-    except Exception as e:
-        logging.info('%s', e)
-        logging.error('unable to open movie map file %s', movie_map_file)
-        raise RuntimeError('Movie mapping file %s not found', movie_map_file)
-
-    num_users = len(user_map)
-    logging.info('num users: %d', num_users)
-    num_movies = len(movie_map)
-    logging.info('num movies: %d', num_movies)
-
-    try:
-        movie_names = pd.read_csv(movie_names_file, names=['movie_id', 'year', 'name'])
-    except:
-        logging.error('unable to read movie names file %s', )
-        raise RuntimeError('Unable to read Input File')
-    
-    movie_names['movie_id'] = movie_names['movie_id'].map(movie_map)
-
-    if map_input:
-        user_id = user_map[int(args['USER_ID'])]
-    else:
-        user_id = int(args['USER_ID'])
-    
-    movies_list = np.array([i for i in range(num_movies)])
-    user_list = np.array([user_id for _ in range(num_movies)])
-    X_test = {'users': user_list, 'movies':movies_list}
-    print('='*100)
-
-    model = Recommender(users=num_users, 
-                        movies=num_movies,
-                        latent_dim=latent_dim,
-                        use_bias=use_bias,
-                        global_bias=use_global_bias)
-    model.load_weights(filepath=model_path).expect_partial()
-    logging.info('successfully loaded trained model weights')
-
-    logging.info('recommending movies for user id %d ...', user_id)
-    y_pred = model.predict(x=X_test, batch_size=batch_size)
-    result = pd.DataFrame({'ratings': y_pred[:,0]})
-    result = movie_names.join(result, on='movie_id', how='inner')
-
-    assert len(result) == num_movies, 'result must be same length as num_movies'
-
-    result.sort_values(by='ratings', ascending=False, inplace=True)
-    result.to_csv(args['OUTPUT_FILE'], index=False)
-    logging.info('saved recommendations to output file')
-    print('='*100)
-
-    top_n_results = result.head(10).values
-    for _, year, name, rating in top_n_results:
-        print('{:80}({})   {}'.format(name, int(year), rating))
-
 def main():
-
     args = docopt(__doc__)
     
     if args['train']:
@@ -684,22 +638,16 @@ def main():
 
     if args['train']:
         logging.info('Train Mode')
-        if args['baseline']:
-            trainBaseline(args)
-        else:
-            trainSVD(args)
+        print('='*100)
+        train(args)
     elif args['test']:
-        logging.info('Recommend Mode')
-        if args['baseline']:
-            testBaseline(args)
-        else:
-            test(args)
-    elif args['recommend']:
         logging.info('Test Mode')
-        if args['baseline']:
-            recommendBaseline(args)
-        else:
-            recommend(args)
+        print('='*100)
+        test(args)
+    elif args['recommend']:
+        logging.info('Recommend Mode')
+        print('='*100)    
+        recommend(args)
     else:
         logging.error('invalid run mode. expected [train/test/recommend]')
         raise RuntimeError('invalid run mode')
