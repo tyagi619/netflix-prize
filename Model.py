@@ -91,6 +91,7 @@ class SimpleSVD(Model):
         user_list = np.array([user_id for _ in range(self._movies)])
         X_test = {'users': user_list, 'movies':movies_list}
         y_pred = self.predict(x=X_test, batch_size=batch_size)
+        return y_pred[:,0]
 
 
 class SVDImproved(Model):
@@ -154,7 +155,7 @@ class SVDImproved(Model):
         user_list = np.array([user_id for _ in range(self._movies)])
         X_test = {'users': user_list, 'movies':movies_list}
         y_pred = self.predict(x=X_test, batch_size=batch_size)
-
+        return y_pred[:,0]
 
 def bayesianAverage(data, num_users, num_movies, K):
     # Calculate avg rating for each movie
