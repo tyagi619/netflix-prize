@@ -58,14 +58,11 @@ As suggested earlier, one could experiment with using L2 regularization on the f
    and download and extract the data in the data folder. If you follow this step, manually create,<br>
    output and logs directory in the main folder.<br>
 3- Train the data<br>
-   ```sh run.sh train [v1/v2/v3]```<br>
-   v1 - simple svd model without biases<br>
-   v2 - svd model with user and movie biases<br>
-   v3 - svd model with user, movie and global biases ( faster convergence than v2 )<br>
+   ```sh run.sh train [v1/v2/v3/v4]```<br>
 4- Test the data<br>
-   ```sh run.sh test [v1/v2/v3]```<br>
-   The results are saved in output/v[1/2/3]_test_result.csv<br>
+   ```sh run.sh test [v1/v2/v3/v4]```<br>
+   The results are saved in output/[v1/v2/v3/v4]/test_result.csv<br>
 5- Get recommendations for user<br>
-   ```sh run.sh recommend [v1/v2/v3] $user_id```<br>
+   ```sh run.sh recommend [v1/v2/v3/v4] $user_id```<br>
    where user_id is the id of user for which recommendation is required,<br>
-   The results are saved in output/v[1/2/3]_recommend_result.csv<br>
+   The results are saved in output/[v1/v2/v3/v4]/recommend_result.csv<br>
