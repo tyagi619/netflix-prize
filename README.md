@@ -41,7 +41,7 @@ Combining the Bayesian and SVD approach, one can improve on the RMSE. The equati
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<img src="https://latex.codecogs.com/svg.latex?\small&space;\hat{r}_{ji}=u_{j}v_{i}^{T}+b_{i}+b_{j}" title="Equation" /><br>
 
 One could try to experiment with fine-tuning <i>b<sub>i</sub></i> and <i>b<sub>j</sub></i> while training, or keep them fixed. In the experiments I ran, keeping <i>b<sub>i</sub></i> and <i>b<sub>j</sub></i> fixed performed better on probe set, because it prevented overfitting for users and movies with small number of ratings available.
-The results for this experiments match with those mentioned by [Simon Funk](https://sifter.org/~simon/journal/20061211.html) in his blog (Train RMSE: ~0.79 and Probe RMSE: ~0.94). Simon Funk suggested adding L2 regularization to feature vectors. I did not use regularization but instead used early stopping to prevent overfitting. However, L2 regularization could give a few decimal of improvement over the probe dataset.
+The results for this experiments match with those mentioned by [Simon Funk](https://sifter.org/~simon/journal/20061211.html) in his blog (Probe RMSE: ~0.932). Simon Funk suggested adding L2 regularization to feature vectors. I did not use regularization but instead used early stopping to prevent overfitting. However, L2 regularization could give a few decimal of improvement over the probe dataset.
 
 ## Adding Non-linerity (v4)
 SVD is in some sense a linear model and linear models could be limiting. One way to deal with this could be to add a non-linear function to the final prediction. I used sigmoid as a non-linear function, but you could try experimenting with different non-linear functions.<br>

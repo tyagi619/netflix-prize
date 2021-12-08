@@ -36,6 +36,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, LambdaCallback, ReduceLROnPlateau
 from sklearn.model_selection import train_test_split
 
 from Model import BayesianModel, SimpleSVD, SVDImproved
@@ -397,25 +398,38 @@ def train(args):
                       metrics=[tf.keras.metrics.RootMeanSquaredError()]
                      )
 
-        modelCheckpoint = tf.keras.callbacks.ModelCheckpoint(filepath=model_save_path,
-                                                            monitor='val_root_mean_squared_error',
-                                                            save_best_only=True,
-                                                            mode='min',
-                                                            save_freq='epoch',
-                                                            save_weights_only=True,
-                                                            verbose=1
-                                                            )
+        modelCheckpoint = ModelCheckpoint(filepath=model_save_path,
+                                          monitor='val_root_mean_squared_error',
+                                          save_best_only=True,
+                                          mode='min',
+                                          save_freq='epoch',
+                                          save_weights_only=True,
+                                          verbose=1
+                                         )
         
-        earlyStopping = tf.keras.callbacks.EarlyStopping(monitor='val_root_mean_squared_error',
-                                                        mode='min',
-                                                        min_delta=0.01,
-                                                        patience=patience,
-                                                        verbose=1)
+        earlyStopping = EarlyStopping(monitor='val_root_mean_squared_error',
+                                      mode='min',
+                                      min_delta=0.001,
+                                      patience=patience,
+                                      verbose=1
+                                     )
         
+        reduceLR = ReduceLROnPlateau(monitor='val_root_mean_squared_error',
+                                     factor=0.5,
+                                     patience=1,
+                                     min_lr=0,
+                                     mode='min'
+                                    )
+
+        logInfo = LambdaCallback(on_epoch_end=lambda epoch, logs: logging.info('Epoch : %d, loss: %0.4f, rmse: %0.4f, val_loss: %0.4f, val_rmse: %0.4f',
+                                                                                epoch, logs['loss'], logs['root_mean_squared_error'], logs['val_loss'],
+                                                                                logs['val_root_mean_squared_error']),
+                                )
+
         model.fit(x=train_data, 
                   validation_data=val_data, 
                   epochs=max_epochs, 
-                  callbacks=[modelCheckpoint, earlyStopping],
+                  callbacks=[modelCheckpoint, earlyStopping, reduceLR, logInfo],
                   verbose=1
                  )
 

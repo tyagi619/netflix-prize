@@ -144,10 +144,12 @@ class SVDImproved(Model):
             m = tf.squeeze(m, axis=-1)
         r = self._matrix(u, m)
         b = self._bias(u, m)
-        r = tf.keras.layers.add([r,b])
         if self._use_sigmoid:
             r = tf.keras.activations.sigmoid(r)
             r = tf.math.scalar_mul(5.0, r)
+        r = tf.keras.layers.add([r,b])
+        if self._use_sigmoid:
+            r = tf.math.scalar_mul(0.5, r)
         return r
     
     def recommend(self, user_id, batch_size=2048):
